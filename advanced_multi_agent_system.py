@@ -12,18 +12,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
-# Define structured output schemas using Pydantic
-class RouterResponse(BaseModel):
-    """Response from the router agent."""
-    agent: str = Field(..., description="The name of the agent that should handle the query")
-
-class FormattedAnswer(BaseModel):
-    """Structured response with answer and mnemonic."""
-    answer: str = Field(..., description="A concise answer to the user's query")
-    mnemonic: str = Field(..., description="A memorable phrase or acronym to help remember the answer")
-    source: str = Field(..., description="The source of the information (e.g., 'web search', 'calculation', 'knowledge base')")
-    confidence: float = Field(..., description="A number between 0 and 1 indicating confidence in the answer")
-    tools_used: List[str] = Field(default_factory=list, description="List of tools that were used to generate the answer")
+#------------------------------------------------------------------------------
+# STATE DEFINITION
+#------------------------------------------------------------------------------
 
 # Define the state for our multi-agent system
 class AgentState(TypedDict):
@@ -32,6 +23,10 @@ class AgentState(TypedDict):
     current_agent: str  # Which agent is currently active
     final_answer: Optional[Dict[str, Any]]  # The final answer in JSON format
     tools_used: List[str]  # List of tools used during processing
+
+#------------------------------------------------------------------------------
+# TOOLS
+#------------------------------------------------------------------------------
 
 # Create a web search tool
 @tool
@@ -76,213 +71,6 @@ def knowledge_base(topic: str) -> str:
             return value
     
     return "No specific information found in the knowledge base for this topic."
-
-# Define our LLM models
-router_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-specialist_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
-formatter_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
-
-# Create structured output versions of the LLMs
-router_llm_structured = router_llm.with_structured_output(RouterResponse)
-formatter_llm_structured = formatter_llm.with_structured_output(FormattedAnswer)
-
-# Define the tools
-tools = [web_search, calculator, knowledge_base]
-
-# Create the router agent
-def router_agent(state: AgentState):
-    """
-    Router agent that decides which specialized agent should handle the query.
-    """
-    messages = state["messages"]
-    
-    # Create a system message for the router
-    router_system_message = SystemMessage(
-        content="""You are a router agent that determines which specialized agent should handle a user query.
-        
-        Available agents:
-        - research_agent: For questions requiring factual information, research, or general knowledge
-        - calculator_agent: For mathematical calculations or numerical analysis
-        - knowledge_agent: For questions about specific topics in our knowledge base
-        
-        Analyze the user's query and respond with the name of the agent that should handle it.
-        """
-    )
-    
-    # Combine the system message with the conversation history
-    router_messages = [router_system_message] + messages
-    
-    # Get the router's decision using structured output
-    response = router_llm_structured.invoke(router_messages)
-    
-    # Get the agent name from the structured response
-    next_agent = response.agent.strip().lower()
-    
-    # Validate the agent name
-    if next_agent not in ["research_agent", "calculator_agent", "knowledge_agent"]:
-        # Default to research agent if invalid
-        next_agent = "research_agent"
-    
-    # Return the updated state
-    return {"current_agent": next_agent, "tools_used": []}
-
-# Create the research agent
-def research_agent(state: AgentState):
-    """
-    Research agent that can search the web for information.
-    """
-    messages = state["messages"]
-    tools_used = state.get("tools_used", [])
-    
-    # Create a system message for the research agent
-    research_system_message = SystemMessage(
-        content="""You are a research agent that can search the web for information.
-        Use the web_search tool to find information when needed.
-        Provide detailed and accurate responses based on the search results.
-        """
-    )
-    
-    # Combine the system message with the conversation history
-    research_messages = [research_system_message] + messages
-    
-    # Bind the tools to the LLM
-    research_llm = specialist_llm.bind_tools(tools=[web_search])
-    
-    # Get the research agent's response
-    response = research_llm.invoke(research_messages)
-    
-    # Update tools used
-    if "web_search" not in tools_used:
-        tools_used.append("web_search")
-    
-    # Return the updated state with the agent's response
-    return {"messages": [response], "tools_used": tools_used}
-
-# Create the calculator agent
-def calculator_agent(state: AgentState):
-    """
-    Calculator agent that can perform mathematical calculations.
-    """
-    messages = state["messages"]
-    tools_used = state.get("tools_used", [])
-    
-    # Create a system message for the calculator agent
-    calculator_system_message = SystemMessage(
-        content="""You are a calculator agent that can perform mathematical calculations.
-        Use the calculator tool to evaluate mathematical expressions.
-        Provide clear explanations of the calculations and results.
-        """
-    )
-    
-    # Combine the system message with the conversation history
-    calculator_messages = [calculator_system_message] + messages
-    
-    # Bind the tools to the LLM
-    calculator_llm = specialist_llm.bind_tools(tools=[calculator])
-    
-    # Get the calculator agent's response
-    response = calculator_llm.invoke(calculator_messages)
-    
-    # Update tools used
-    if "calculator" not in tools_used:
-        tools_used.append("calculator")
-    
-    # Return the updated state with the agent's response
-    return {"messages": [response], "tools_used": tools_used}
-
-# Create the knowledge agent
-def knowledge_agent(state: AgentState):
-    """
-    Knowledge agent that can query the knowledge base.
-    """
-    messages = state["messages"]
-    tools_used = state.get("tools_used", [])
-    
-    # Create a system message for the knowledge agent
-    knowledge_system_message = SystemMessage(
-        content="""You are a knowledge agent that can query the knowledge base for information.
-        Use the knowledge_base tool to find information on specific topics.
-        Provide comprehensive and accurate responses based on the knowledge base.
-        """
-    )
-    
-    # Combine the system message with the conversation history
-    knowledge_messages = [knowledge_system_message] + messages
-    
-    # Bind the tools to the LLM
-    knowledge_llm = specialist_llm.bind_tools(tools=[knowledge_base])
-    
-    # Get the knowledge agent's response
-    response = knowledge_llm.invoke(knowledge_messages)
-    
-    # Update tools used
-    if "knowledge_base" not in tools_used:
-        tools_used.append("knowledge_base")
-    
-    # Return the updated state with the agent's response
-    return {"messages": [response], "tools_used": tools_used}
-
-# Create the formatter agent
-def formatter_agent(state: AgentState):
-    """
-    Formatter agent that creates a structured response with an answer and mnemonic.
-    """
-    messages = state["messages"]
-    tools_used = state.get("tools_used", [])
-    
-    # Create a system message for the formatter agent
-    formatter_system_message = SystemMessage(
-        content="""You are a formatter agent that creates a structured response.
-        
-        Based on the conversation history, create a response with:
-        - A concise answer to the user's query
-        - A memorable phrase or acronym to help remember the answer
-        - The source of the information (e.g., "web search", "calculation", "knowledge base")
-        - Your confidence in the answer (a number between 0 and 1)
-        """
-    )
-    
-    # Combine the system message with the conversation history
-    formatter_messages = [formatter_system_message] + messages
-    
-    # Get the formatter agent's response using structured output
-    response = formatter_llm_structured.invoke(formatter_messages)
-    
-    # Add tools_used to the response if not present
-    if not response.tools_used and tools_used:
-        response.tools_used = tools_used
-    
-    # Return the final answer as a dictionary using model_dump() instead of dict()
-    return {"final_answer": response.model_dump()}
-
-# Define a custom tools condition function
-def tools_condition_custom(state: AgentState):
-    """
-    Custom condition to check if tools were called in the last message.
-    Returns the name of the next node to call.
-    """
-    # Get the last message
-    last_message = state["messages"][-1]
-    
-    # Check if the last message has tool calls
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        # If tool calls exist, route to the tools node
-        return "tools"
-    else:
-        # If no tool calls, route based on the current agent
-        if state["current_agent"] in ["research_agent", "calculator_agent", "knowledge_agent"]:
-            # If we're in a specialized agent and no tools were called, go to formatter
-            return "formatter_agent"
-        else:
-            # Otherwise, end the graph
-            return END
-
-# Define the condition for routing to specialized agents
-def route_to_agent(state: AgentState):
-    """
-    Determine which agent to route to based on the current_agent field.
-    """
-    return state["current_agent"]
 
 # Define a custom class for handling tools
 class CustomToolNode:
@@ -329,6 +117,252 @@ class CustomToolNode:
         # Return the updated state with the tool messages
         return {"messages": outputs, "tools_used": tools_used}
 
+# Define the tools list
+tools = [web_search, calculator, knowledge_base]
+
+#------------------------------------------------------------------------------
+# ROUTER AGENT
+#------------------------------------------------------------------------------
+
+# Define structured output schema for router
+class RouterResponse(BaseModel):
+    """Response from the router agent."""
+    agent: str = Field(..., description="The name of the agent that should handle the query")
+
+# Define LLM for router and bind structured output
+router_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+router_llm_structured = router_llm.with_structured_output(RouterResponse)
+
+# Create the router agent
+def router_agent(state: AgentState):
+    """
+    Router agent that decides which specialized agent should handle the query.
+    """
+    messages = state["messages"]
+    
+    # Create a system message for the router
+    router_system_message = SystemMessage(
+        content="""You are a router agent that determines which specialized agent should handle a user query.
+        
+        Available agents:
+        - research_agent: For questions requiring factual information, research, or general knowledge
+        - calculator_agent: For mathematical calculations or numerical analysis
+        - knowledge_agent: For questions about specific topics in our knowledge base
+        
+        Analyze the user's query and respond with the name of the agent that should handle it.
+        """
+    )
+    
+    # Combine the system message with the conversation history
+    router_messages = [router_system_message] + messages
+    
+    # Get the router's decision using structured output
+    response = router_llm_structured.invoke(router_messages)
+    
+    # Get the agent name from the structured response
+    next_agent = response.agent.strip().lower()
+    
+    # Validate the agent name
+    if next_agent not in ["research_agent", "calculator_agent", "knowledge_agent"]:
+        # Default to research agent if invalid
+        next_agent = "research_agent"
+    
+    # Return the updated state
+    return {"current_agent": next_agent, "tools_used": []}
+
+# Define the condition for routing to specialized agents
+def route_to_agent(state: AgentState):
+    """
+    Determine which agent to route to based on the current_agent field.
+    """
+    return state["current_agent"]
+
+#------------------------------------------------------------------------------
+# SPECIALIZED AGENTS
+#------------------------------------------------------------------------------
+
+# Define LLM for specialist agents
+specialist_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
+
+# Pre-bind tools to specialist LLMs for better performance
+research_llm = specialist_llm.bind_tools(tools=[web_search])
+calculator_llm = specialist_llm.bind_tools(tools=[calculator])
+knowledge_llm = specialist_llm.bind_tools(tools=[knowledge_base])
+
+# Create the research agent
+def research_agent(state: AgentState):
+    """
+    Research agent that can search the web for information.
+    """
+    messages = state["messages"]
+    tools_used = state.get("tools_used", [])
+    
+    # Create a system message for the research agent
+    research_system_message = SystemMessage(
+        content="""You are a research agent that can search the web for information.
+        Use the web_search tool to find information when needed.
+        Provide detailed and accurate responses based on the search results.
+        """
+    )
+    
+    # Combine the system message with the conversation history
+    research_messages = [research_system_message] + messages
+    
+    # Get the research agent's response using the pre-bound LLM
+    response = research_llm.invoke(research_messages)
+    
+    # Update tools used
+    if "web_search" not in tools_used:
+        tools_used.append("web_search")
+    
+    # Return the updated state with the agent's response
+    return {"messages": [response], "tools_used": tools_used}
+
+# Create the calculator agent
+def calculator_agent(state: AgentState):
+    """
+    Calculator agent that can perform mathematical calculations.
+    """
+    messages = state["messages"]
+    tools_used = state.get("tools_used", [])
+    
+    # Create a system message for the calculator agent
+    calculator_system_message = SystemMessage(
+        content="""You are a calculator agent that can perform mathematical calculations.
+        Use the calculator tool to evaluate mathematical expressions.
+        Provide clear explanations of the calculations and results.
+        """
+    )
+    
+    # Combine the system message with the conversation history
+    calculator_messages = [calculator_system_message] + messages
+    
+    # Get the calculator agent's response using the pre-bound LLM
+    response = calculator_llm.invoke(calculator_messages)
+    
+    # Update tools used
+    if "calculator" not in tools_used:
+        tools_used.append("calculator")
+    
+    # Return the updated state with the agent's response
+    return {"messages": [response], "tools_used": tools_used}
+
+# Create the knowledge agent
+def knowledge_agent(state: AgentState):
+    """
+    Knowledge agent that can query the knowledge base.
+    """
+    messages = state["messages"]
+    tools_used = state.get("tools_used", [])
+    
+    # Create a system message for the knowledge agent
+    knowledge_system_message = SystemMessage(
+        content="""You are a knowledge agent that can query the knowledge base for information.
+        Use the knowledge_base tool to find information on specific topics.
+        Provide comprehensive and accurate responses based on the knowledge base.
+        """
+    )
+    
+    # Combine the system message with the conversation history
+    knowledge_messages = [knowledge_system_message] + messages
+    
+    # Get the knowledge agent's response using the pre-bound LLM
+    response = knowledge_llm.invoke(knowledge_messages)
+    
+    # Update tools used
+    if "knowledge_base" not in tools_used:
+        tools_used.append("knowledge_base")
+    
+    # Return the updated state with the agent's response
+    return {"messages": [response], "tools_used": tools_used}
+
+#------------------------------------------------------------------------------
+# FORMATTER AGENT
+#------------------------------------------------------------------------------
+
+# Define structured output schema for formatter
+class FormattedAnswer(BaseModel):
+    """Structured response with answer and mnemonic."""
+    answer: str = Field(..., description="A concise answer to the user's query")
+    mnemonic: str = Field(..., description="A memorable phrase or acronym to help remember the answer")
+    source: str = Field(..., description="The source of the information (e.g., 'web search', 'calculation', 'knowledge base')")
+    confidence: float = Field(..., description="A number between 0 and 1 indicating confidence in the answer")
+    tools_used: List[str] = Field(default_factory=list, description="List of tools that were used to generate the answer")
+
+# Define LLM for formatter
+formatter_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
+formatter_llm_structured = formatter_llm.with_structured_output(FormattedAnswer)
+
+# Create the formatter agent
+def formatter_agent(state: AgentState):
+    """
+    Formatter agent that creates a structured response with an answer and mnemonic.
+    """
+    messages = state["messages"]
+    tools_used = state.get("tools_used", [])
+    
+    # Create a system message for the formatter agent
+    formatter_system_message = SystemMessage(
+        content="""You are a formatter agent that creates a structured response.
+        
+        Based on the conversation history, create a response with:
+        - A concise answer to the user's query
+        - A memorable phrase or acronym to help remember the answer
+        - The source of the information (e.g., "web search", "calculation", "knowledge base")
+        - Your confidence in the answer (a number between 0 and 1)
+        """
+    )
+    
+    # Combine the system message with the conversation history
+    formatter_messages = [formatter_system_message] + messages
+    
+    # Get the formatter agent's response using structured output
+    response = formatter_llm_structured.invoke(formatter_messages)
+    
+    # Add tools_used to the response if not present
+    if not response.tools_used and tools_used:
+        response.tools_used = tools_used
+    
+    # Return the final answer as a dictionary using model_dump() instead of dict()
+    return {"final_answer": response.model_dump()}
+
+#------------------------------------------------------------------------------
+# ROUTING CONDITIONS
+#------------------------------------------------------------------------------
+
+# Define a custom tools condition function
+def tools_condition_custom(state: AgentState):
+    """
+    Custom condition to check if tools were called in the last message.
+    Returns the name of the next node to call.
+    """
+    # Get the last message
+    last_message = state["messages"][-1]
+    
+    # Check if the last message has tool calls
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        # If tool calls exist, route to the tools node
+        return "tools"
+    else:
+        # If no tool calls, route based on the current agent
+        if state["current_agent"] in ["research_agent", "calculator_agent", "knowledge_agent"]:
+            # If we're in a specialized agent and no tools were called, go to formatter
+            return "formatter_agent"
+        else:
+            # Otherwise, end the graph
+            return END
+
+# Define a function to route tools back to the appropriate agent
+def route_tools_to_agent(state: AgentState):
+    """
+    Route tools back to the appropriate agent.
+    """
+    return state["current_agent"]
+
+#------------------------------------------------------------------------------
+# GRAPH CONSTRUCTION
+#------------------------------------------------------------------------------
+
 # Build the graph
 def build_graph():
     """
@@ -360,13 +394,6 @@ def build_graph():
     # Connect the formatter to the end
     graph.add_edge("formatter_agent", END)
     
-    # Define a function to route tools back to the appropriate agent
-    def route_tools_to_agent(state: AgentState):
-        """
-        Route tools back to the appropriate agent.
-        """
-        return state["current_agent"]
-    
     # Connect tools back to the appropriate agent using conditional edges
     graph.add_conditional_edges("tools", route_tools_to_agent)
     
@@ -376,6 +403,10 @@ def build_graph():
 
 # Create the graph
 graph = build_graph()
+
+#------------------------------------------------------------------------------
+# EXECUTION AND DISPLAY
+#------------------------------------------------------------------------------
 
 # Function to extract content from node updates
 def extract_content(data):
@@ -482,6 +513,10 @@ def stream_graph_execution(query):
         print("No final answer available.")
     
     return final_answer
+
+#------------------------------------------------------------------------------
+# MAIN EXECUTION
+#------------------------------------------------------------------------------
 
 # Example usage
 if __name__ == "__main__":
