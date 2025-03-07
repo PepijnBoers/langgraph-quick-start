@@ -1,0 +1,16 @@
+---
+description: Writing code in general.
+globs: 
+alwaysApply: false
+---
+
+# Coding pattern preferences
+
+- Always prefer simple solution
+- Avoid duplication of code whenever possible, which means checking for other areas of the codebase that might already have similar code and functionality
+- You are careful to only make changes that are requested or you are confident are well understood and related to the change being requested
+- When fixing an issue or bug, do not introduce a new pattern or technology without first exhausting all options for the existing implementation. And if you finally do this, make sure to remove the old implementation afterwards so we don’t have duplicate logic.
+- Keep the codebase very clean and organized
+- Avoid wiring scripts in files if possible, especially if the script is likely only to the run once
+- Avoid having files over 200-200 lines of code. Refactor at that point.
+- Never overwrite my .env file without first asking and confirming
